@@ -1,0 +1,301 @@
+datasource db {
+  provider = "sqlite"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+model User {
+  id                      String        @id @default(uuid())
+  name                    String
+  email                   String        @unique
+  mobileNumber            String        @unique
+  passwordHash            String
+  role                    String        @default("USER") // USER, BANK_OPERATOR, BANK_ADMIN
+  stepUpThreshold         Decimal       @default(15000) // Default ₹15,000 threshold
+  dailyLimit              Decimal       @default(50000) // Default ₹50,000 limit
+  requireMfaNewPayees     Boolean       @default(true)
+  requireMfaNewDevices    Boolean       @default(false)
+  allowTrustedPayees      Boolean       @default(true)
+  mfaEnabled              Boolean       @default(false)
+  mfaSecretEncrypted      String?
+  mfaSetupTokenHash       String?
+  mfaSetupTokenExpires    DateTime?
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
+
+  bankAccounts            BankAccount[]
+  payees                  Payee[]
+  transactions            Transaction[]
+  challenges              AuthenticationChallenge[]
+  sessions                Session[]
+  auditLogs               AuditEvent[]
+  recoveryCodes           RecoveryCode[]
+  
+  fraudReportsSubmitted   FraudReport[] @relation("ReporterUser")
+  fraudReportsSuspected   FraudReport[] @relation("SuspectUser")
+  accountFreezes          AccountFreeze[]
+  liens                   AccountLien[]
+  disputes                Dispute[]
+}
+
+model BankAccount {
+  id                   String        @id @default(uuid())
+  userId               String
+  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bankName             String
+  accountNumberMasked  String
+  upiId                String        @unique
+  balance              Decimal       @default(75000.00)
+  status               String        @default("ACTIVE") // ACTIVE, DEBIT_HOLD_ACTIVE, CREDIT_ONLY, BLOCKED, CLOSED
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  credentials          MockBankCredential?
+  freezes              AccountFreeze[]
+  liens                AccountLien[]
+  fraudReportsSuspected FraudReport[] @relation("SuspectBankAccount")
+  investigations       InvestigationCase[]
+}
+
+model MockBankCredential {
+  id            String      @id @default(uuid())
+  bankAccountId String      @unique
+  bankAccount   BankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+  pinHash       String      // Hashed UPI PIN
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model RecoveryCode {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  used      Boolean   @default(false)
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model Payee {
+  id             String          @id @default(uuid())
+  userId         String
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  upiId          String
+  isTrusted      Boolean         @default(false)
+  limitAmount    Decimal?        // Custom limit for payee
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+model Transaction {
+  id              String         @id @default(uuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payeeName       String
+  payeeUpiId      String
+  amount          Decimal
+  note            String?
+  status          String         // CREATED, MFA_REQUIRED, MFA_VERIFIED, BANK_AUTH_REQUIRED, PROCESSING, SUCCESS, FAILED, BLOCKED
+  authMethod      String         // NONE, STANDARD, TOTP, RECOVERY_CODE, SIMULATED_SMS
+  riskLevel       String         // LOW, MEDIUM, HIGH, CRITICAL
+  blockReasons    String?        // JSON list of strings detailing triggered rules
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  challenges      AuthenticationChallenge[]
+  fraudReports    FraudReport[]
+  liens           AccountLien[]
+  disputes        Dispute[]
+}
+
+model AccountFreeze {
+  id                  String        @id @default(uuid())
+  accountId           String
+  account             BankAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId              String
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status              String        @default("DEBIT_HOLD_ACTIVE") // NONE, DEBIT_HOLD_ACTIVE, RELEASED, EXPIRED, ESCALATED
+  reason              String
+  triggeredBy         String        // FRAUD_REPORT, SMART_DISPUTE, MANUAL_ADMIN, SYSTEM_POLICY
+  fraudReportId       String?
+  fraudReport         FraudReport?  @relation(fields: [fraudReportId], references: [id], onDelete: SetNull)
+  startedAt           DateTime      @default(now())
+  expiresAt           DateTime
+  releasedAt          DateTime?
+  releasedBy          String?
+  releaseReason       String?
+  investigationStatus String        @default("PENDING_REVIEW") // PENDING_REVIEW, UNDER_INVESTIGATION, CLEARED, CONFIRMED_FRAUD, CLOSED
+  notes               String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@index([accountId])
+  @@index([userId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+model AccountLien {
+  id            String       @id @default(uuid())
+  accountId     String
+  account       BankAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactionId String?
+  transaction   Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  fraudReportId String?
+  fraudReport   FraudReport? @relation(fields: [fraudReportId], references: [id], onDelete: SetNull)
+  amount        Decimal
+  reason        String
+  status        String       @default("ACTIVE") // ACTIVE, RELEASED, EXPIRED, CONFIRMED_SEIZURE
+  releasedAt    DateTime?
+  releasedBy    String?
+  releaseReason String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([accountId])
+  @@index([userId])
+  @@index([status])
+}
+
+model FraudReport {
+  id                String            @id @default(uuid())
+  reporterUserId    String
+  reporterUser      User              @relation("ReporterUser", fields: [reporterUserId], references: [id], onDelete: Cascade)
+  suspectUserId     String?
+  suspectUser       User?             @relation("SuspectUser", fields: [suspectUserId], references: [id], onDelete: SetNull)
+  suspectAccountId  String?
+  suspectAccount    BankAccount?      @relation("SuspectBankAccount", fields: [suspectAccountId], references: [id], onDelete: SetNull)
+  transactionId     String?
+  transaction       Transaction?      @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  suspectUpiId      String
+  amount            Decimal?
+  category          String            // MALICIOUS_FRAUD, UNAUTHORIZED_TRANSACTION, SOCIAL_ENGINEERING, FAKE_MERCHANT, ACCOUNT_TAKEOVER, SUSPICIOUS_PAYEE, OTHER
+  description       String
+  status            String            @default("SUBMITTED") // SUBMITTED, UNDER_REVIEW, LIEN_ACTIVE, HOLD_ACTIVE, ESCALATED, CLEARED, CONFIRMED, CLOSED
+  priority          String            @default("HIGH") // LOW, MEDIUM, HIGH, CRITICAL
+  evidenceUrl       String?
+  assignedCaseId    String?
+  resolution        String?
+  resolvedAt        DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  freezes           AccountFreeze[]
+  liens             AccountLien[]
+  investigations    InvestigationCase[]
+
+  @@index([reporterUserId])
+  @@index([suspectUpiId])
+  @@index([status])
+}
+
+model InvestigationCase {
+  id                String        @id @default(uuid())
+  fraudReportId     String
+  fraudReport       FraudReport   @relation(fields: [fraudReportId], references: [id], onDelete: Cascade)
+  suspectAccountId  String?
+  suspectAccount    BankAccount?  @relation(fields: [suspectAccountId], references: [id], onDelete: SetNull)
+  status            String        @default("OPEN") // OPEN, UNDER_REVIEW, PENDING_CUSTOMER_ACTION, RESOLVED, CLOSED
+  openedAt          DateTime      @default(now())
+  reviewedAt        DateTime?
+  closedAt          DateTime?
+  reviewer          String?
+  resolution        String?
+  notes             String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([fraudReportId])
+  @@index([status])
+}
+
+model Dispute {
+  id                  String                  @id @default(uuid())
+  userId              String
+  user                User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactionId       String?
+  transaction         Transaction?            @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  rawDescription      String
+  predictedType       String                  // PENDING_NETWORK_TIMEOUT, UNAUTHORIZED_TRANSACTION, MALICIOUS_FRAUD, DUPLICATE_TRANSACTION, WRONG_RECIPIENT, MERCHANT_NOT_RECEIVED, ACCOUNT_DEBITED_PAYMENT_FAILED, REFUND_NOT_RECEIVED, ACCOUNT_TAKEOVER, SUSPICIOUS_TRANSACTION, OTHER
+  confidence          Float
+  severity            String                  // LOW, MEDIUM, HIGH, CRITICAL
+  routingStatus       String                  @default("SUBMITTED") // SUBMITTED, ROUTED, IN_REVIEW, RESOLVED
+  recommendedRoute    String                  // PAYMENT_STATUS_RECONCILIATION, BENEFICIARY_PAYMENT_RECONCILIATION, UNAUTHORIZED_TRANSACTION_INVESTIGATION, DUPLICATE_PAYMENT_REVIEW, WRONG_RECIPIENT_DISPUTE, FRAUD_INVESTIGATION, ACCOUNT_SECURITY_ESCALATION
+  requiresHumanReview Boolean                 @default(false)
+  resolution          String?
+  resolvedAt          DateTime?
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+
+  classifications     DisputeClassification[]
+
+  @@index([userId])
+  @@index([predictedType])
+  @@index([requiresHumanReview])
+}
+
+model DisputeClassification {
+  id           String    @id @default(uuid())
+  disputeId    String
+  dispute      Dispute   @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  modelType    String    @default("RULE_BASED_NLP") // RULE_BASED_NLP, LLM
+  modelVersion String    @default("v1.0.0")
+  category     String
+  confidence   Float
+  reason       String?
+  createdAt    DateTime  @default(now())
+
+  @@index([disputeId])
+}
+
+model SystemPolicy {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String
+  description String
+  updatedAt   DateTime @updatedAt
+}
+
+model AuthenticationChallenge {
+  id            String       @id @default(uuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactionId String
+  transaction   Transaction  @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  type          String       // TOTP, RECOVERY_CODE, SMS_SIMULATED
+  attempts      Int          @default(0)
+  maxAttempts   Int          @default(5)
+  status        String       // PENDING, VERIFIED, FAILED, LOCKED
+  expiresAt     DateTime
+  createdAt     DateTime     @default(now())
+}
+
+model Session {
+  id             String    @id @default(uuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token          String    @unique
+  deviceBrowser  String
+  deviceOs       String
+  ipAddress      String
+  lastActiveAt   DateTime  @default(now())
+  isTrusted      Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+}
+
+model AuditEvent {
+  id                 String    @id @default(uuid())
+  userId             String
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventType          String    // LOGIN_SUCCESS, FRAUD_REPORT_CREATED, DEBIT_HOLD_ACTIVATED, etc.
+  transactionId      String?
+  deviceIdentifier   String?
+  metadata           String?   // JSON string
+  timestamp          DateTime  @default(now())
+}
