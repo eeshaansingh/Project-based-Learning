@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter, Outfit } from 'next/font/google';
 import './globals.css';
 
@@ -17,8 +17,16 @@ const outfit = Outfit({
 export const metadata: Metadata = {
   title: 'SecureUPI — Adaptive MFA UPI Payment Prototype',
   description: 'An educational prototype demonstrating risk-based adaptive multi-factor authentication (MFA) at the application layer before bank UPI PIN authorization.',
-  viewport: 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover',
 };
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: 'cover',
+};
+
 
 export default function RootLayout({
   children,
